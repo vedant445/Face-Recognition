@@ -1,5 +1,5 @@
 import streamlit as st
-from PIL import Image, ImageOps
+from PIL import Image
 import numpy as np
 import cv2
 import tensorflow as tf
@@ -33,39 +33,20 @@ face_detector = load_mtcnn()
 # Helper Functions
 # ----------------------------
 def detect_faces_mtcnn(frame):
-    """Improved MTCNN-based face detection with fallback resizing."""
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    faces = []
-
     try:
         results = face_detector.detect_faces(rgb_frame)
     except Exception:
-        return faces
-
-    # Collect detected boxes
+        return []
+    faces = []
     for res in results:
         x, y, w, h = res['box']
         x, y = max(0, x), max(0, y)
-        if w > 30 and h > 30:  # ignore tiny boxes
-            faces.append((x, y, w, h))
-
-    # 🔁 If no faces found, try resizing (helps with small faces)
-    if not faces:
-        bigger = cv2.resize(rgb_frame, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_LINEAR)
-        try:
-            results = face_detector.detect_faces(bigger)
-            for res in results:
-                x, y, w, h = [int(v / 1.5) for v in res['box']]
-                if w > 30 and h > 30:
-                    faces.append((x, y, w, h))
-        except Exception:
-            pass
-
+        faces.append((x, y, w, h))
     return faces
 
 
 def detect_mask_frame(frame, confidence_threshold=0.6, min_face_size=50, pad=10):
-    """Detect mask on each face in a given frame."""
     results = []
     faces = detect_faces_mtcnn(frame)
     for (x, y, w, h) in faces:
@@ -76,14 +57,11 @@ def detect_mask_frame(frame, confidence_threshold=0.6, min_face_size=50, pad=10)
         face_img = frame[y1:y2, x1:x2]
         if face_img.size == 0:
             continue
-
         face_img = cv2.resize(face_img, (160, 160))
         face_array = np.expand_dims(face_img, axis=0) / 255.0
         pred = mask_model.predict(face_array, verbose=0)[0]
-
         if max(pred) < confidence_threshold:
             continue
-
         label = "Mask" if pred[0] > pred[1] else "No Mask"
         color = (0, 255, 0) if label == "Mask" else (255, 0, 0)
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
@@ -91,6 +69,7 @@ def detect_mask_frame(frame, confidence_threshold=0.6, min_face_size=50, pad=10)
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
         results.append(label)
     return frame, results
+
 
 # ----------------------------
 # Input Options
@@ -102,34 +81,63 @@ if option == "Use Camera":
     image_data = st.camera_input("Capture image using webcam:")
     if image_data:
         image = Image.open(image_data)
-        image = ImageOps.exif_transpose(image)  # auto-fix rotation
         frame, results = detect_mask_frame(np.array(image.convert("RGB")))
         st.image(frame, channels="RGB", use_container_width=True)
         if results:
             st.success(f"Detected: {results}")
         else:
-            st.warning("No face detected. Try better lighting or frontal face.")
+            st.warning("No face detected.")
 
-# 2️⃣ Image Upload
+
+# 2️⃣ Image Upload (✅ Improved MTCNN Face Detection)
 elif option == "Upload Image":
     uploaded_file = st.file_uploader("Upload an image...", type=["jpg", "jpeg", "png"])
     if uploaded_file:
         image = Image.open(uploaded_file)
-        image = ImageOps.exif_transpose(image)  # fix orientation
         st.image(image, caption="Uploaded Image", use_container_width=True)
-        frame, results = detect_mask_frame(np.array(image.convert("RGB")))
-        st.image(frame, channels="RGB", use_container_width=True)
-        if results:
-            st.success(f"Detected: {results}")
-        else:
-            st.warning("No face detected. Try a clearer, well-lit image.")
 
-# 3️⃣ Video Upload
+        frame = np.array(image.convert("RGB"))
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+        try:
+            detections = face_detector.detect_faces(rgb_frame)
+        except Exception:
+            detections = []
+
+        if not detections:
+            st.warning("No face detected. Try uploading a clearer image.")
+        else:
+            for det in detections:
+                x, y, w, h = det["box"]
+                x, y = max(0, x), max(0, y)
+                w, h = abs(w), abs(h)
+
+                face_img = frame[y:y + h, x:x + w]
+                if face_img.size == 0:
+                    continue
+                face_img = cv2.resize(face_img, (160, 160))
+                face_array = np.expand_dims(face_img, axis=0) / 255.0
+                pred = mask_model.predict(face_array, verbose=0)[0]
+
+                label = "Mask" if pred[0] > pred[1] else "No Mask"
+                confidence = max(pred)
+                color = (0, 255, 0) if label == "Mask" else (255, 0, 0)
+
+                cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+                cv2.putText(frame, f"{label} ({confidence*100:.1f}%)",
+                            (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+            st.image(frame, channels="RGB", use_container_width=True)
+            st.success("✅ Detection complete.")
+
+
+# 3️⃣ Video Upload with Live Preview
 elif option == "Upload Video":
     uploaded_video = st.file_uploader("Upload a video file...", type=["mp4", "avi", "mov", "mkv"])
     if uploaded_video:
         st.info("Processing video... please wait ⏳")
 
+        # Save uploaded file to temporary path
         tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         tfile.write(uploaded_video.read())
         tfile.flush()
@@ -145,13 +153,16 @@ elif option == "Upload Video":
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
+        # Output video writer (.avi more stable)
         out_path_avi = tempfile.NamedTemporaryFile(delete=False, suffix=".avi").name
         fourcc = cv2.VideoWriter_fourcc(*'XVID')
         out = cv2.VideoWriter(out_path_avi, fourcc, fps, (w, h))
 
+        # Streamlit live preview setup
         progress_bar = st.progress(0)
         status_text = st.empty()
         video_placeholder = st.empty()
+
         frame_no = 0
         frames_processed = 0
 
@@ -160,12 +171,16 @@ elif option == "Upload Video":
             if not ret:
                 break
             frame_no += 1
+
             processed_frame, _ = detect_mask_frame(frame)
             out.write(processed_frame)
             frames_processed += 1
 
+            # Show live preview
             rgb_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
             video_placeholder.image(rgb_frame, caption=f"Processing frame {frame_no}/{total_frames}", use_container_width=True)
+
+            # Progress bar update
             progress_bar.progress(min(frame_no / total_frames, 1.0))
             status_text.text(f"Processed {frame_no}/{total_frames} frames...")
 
@@ -181,4 +196,5 @@ elif option == "Upload Video":
         else:
             st.error("⚠️ Processed video appears empty. Try a different file.")
 
+        # Clean up
         os.remove(tfile.name)
