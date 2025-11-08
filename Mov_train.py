@@ -4,11 +4,16 @@ import numpy as np
 import cv2
 import tensorflow as tf
 from mtcnn import MTCNN
+import tempfile
+import os
 
 st.set_page_config(page_title="Face Mask Detector", page_icon="😷")
 st.title("Face Mask Detection App")
-st.write("Detect masks in images or live webcam.")
+st.write("Detect masks in images, videos, or live webcam snapshots.")
 
+# ----------------------------
+# Load Models
+# ----------------------------
 @st.cache_resource(show_spinner=True)
 def load_mask_model():
     model = tf.keras.models.load_model("mask_detector.model.h5")
@@ -22,6 +27,9 @@ def load_mtcnn():
 
 face_detector = load_mtcnn()
 
+# ----------------------------
+# Helper Functions
+# ----------------------------
 def detect_faces_mtcnn(frame):
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = face_detector.detect_faces(rgb_frame)
@@ -62,10 +70,13 @@ def detect_mask_frame(frame, confidence_threshold=0.6, min_face_size=50, pad=10)
     return frame, results
 
 # ----------------------------
-# Input selection
+# Input Options
 # ----------------------------
-option = st.radio("Choose input type:", ["Use Camera", "Upload Image"])
+option = st.radio("Choose input type:", ["Use Camera", "Upload Image", "Upload Video"])
 
+# ----------------------------
+# Option 1: Camera Snapshot
+# ----------------------------
 if option == "Use Camera":
     st.write("Capture image using your webcam below 👇")
     image_data = st.camera_input("Take a picture")
@@ -79,6 +90,9 @@ if option == "Use Camera":
         else:
             st.warning("No face detected.")
 
+# ----------------------------
+# Option 2: Image Upload
+# ----------------------------
 elif option == "Upload Image":
     uploaded_file = st.file_uploader("Upload an image...", type=["jpg", "jpeg", "png"])
     if uploaded_file:
@@ -90,3 +104,34 @@ elif option == "Upload Image":
             st.success(f"Detected: {results}")
         else:
             st.warning("No face detected.")
+
+# ----------------------------
+# Option 3: Video Upload
+# ----------------------------
+elif option == "Upload Video":
+    video_file = st.file_uploader("Upload a video file...", type=["mp4", "avi", "mov", "mkv"])
+    if video_file:
+        tfile = tempfile.NamedTemporaryFile(delete=False)
+        tfile.write(video_file.read())
+        cap = cv2.VideoCapture(tfile.name)
+        stframe = st.empty()
+        frame_skip = 3  # process every 3rd frame for speed
+
+        st.info("Processing video... please wait ⏳")
+        frame_count = 0
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            frame_count += 1
+            if frame_count % frame_skip != 0:
+                continue
+
+            frame = cv2.resize(frame, (640, 480))
+            frame, _ = detect_mask_frame(frame)
+            stframe.image(frame, channels="BGR", use_container_width=True)
+
+        cap.release()
+        st.success("✅ Video processed successfully!")
+        os.remove(tfile.name)
