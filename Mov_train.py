@@ -3,7 +3,6 @@ from PIL import Image
 import numpy as np
 import cv2
 import tensorflow as tf
-from mtcnn import MTCNN
 import tempfile
 import os
 
@@ -15,38 +14,26 @@ st.write("Detect masks in images, videos, or live webcam snapshots.")
 def load_mask_model():
     return tf.keras.models.load_model("mask_detector.model.h5")
 
-@st.cache_resource(show_spinner=True)
-def load_mtcnn():
-    return MTCNN()
-
 mask_model = load_mask_model()
-face_detector = load_mtcnn()
 
-# ----------------------------
-# Helper functions
-# ----------------------------
-def detect_faces_mtcnn(frame):
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    try:
-        results = face_detector.detect_faces(rgb_frame)
-    except Exception:
-        return []
-    faces = []
-    for res in results:
-        x, y, w, h = res['box']
-        x, y = max(0, x), max(0, y)
-        faces.append((x, y, w, h))
+# Load OpenCV face detector (much faster)
+@st.cache_resource(show_spinner=True)
+def load_opencv_face_detector():
+    modelFile = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    return cv2.CascadeClassifier(modelFile)
+
+face_detector = load_opencv_face_detector()
+
+def detect_faces_opencv(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    faces = face_detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50))
     return faces
 
-def detect_mask_frame(frame, confidence_threshold=0.6, min_face_size=50, pad=10):
+def detect_mask_frame(frame, confidence_threshold=0.6):
     results = []
-    faces = detect_faces_mtcnn(frame)
+    faces = detect_faces_opencv(frame)
     for (x, y, w, h) in faces:
-        if w < min_face_size or h < min_face_size:
-            continue
-        x1, y1 = max(0, x - pad), max(0, y - pad)
-        x2, y2 = min(frame.shape[1], x + w + pad), min(frame.shape[0], y + h + pad)
-        face_img = frame[y1:y2, x1:x2]
+        face_img = frame[y:y + h, x:x + w]
         if face_img.size == 0:
             continue
         face_img = cv2.resize(face_img, (160, 160))
@@ -56,8 +43,8 @@ def detect_mask_frame(frame, confidence_threshold=0.6, min_face_size=50, pad=10)
             continue
         label = "Mask" if pred[0] > pred[1] else "No Mask"
         color = (0, 255, 0) if label == "Mask" else (255, 0, 0)
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+        cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
         results.append(label)
     return frame, results
 
@@ -66,7 +53,7 @@ def detect_mask_frame(frame, confidence_threshold=0.6, min_face_size=50, pad=10)
 # ----------------------------
 option = st.radio("Choose input type:", ["Use Camera", "Upload Image", "Upload Video"])
 
-# 1️⃣ Webcam Snapshot
+# Webcam Snapshot
 if option == "Use Camera":
     image_data = st.camera_input("Capture image using webcam:")
     if image_data:
@@ -78,7 +65,7 @@ if option == "Use Camera":
         else:
             st.warning("No face detected.")
 
-# 2️⃣ Image Upload
+# Image Upload
 elif option == "Upload Image":
     uploaded_file = st.file_uploader("Upload an image...", type=["jpg", "jpeg", "png"])
     if uploaded_file:
@@ -91,36 +78,35 @@ elif option == "Upload Image":
         else:
             st.warning("No face detected.")
 
-# 3️⃣ Video Upload
+# Video Upload
 elif option == "Upload Video":
-    uploaded_video = st.file_uploader("Upload a video file...", type=["mp4", "avi", "mov", "mkv", "mpeg4"])
+    uploaded_video = st.file_uploader("Upload a video file...", type=["mp4", "avi", "mov", "mkv"])
     if uploaded_video:
         st.info("Processing video... please wait ⏳")
         tfile = tempfile.NamedTemporaryFile(delete=False)
         tfile.write(uploaded_video.read())
-        cap = cv2.VideoCapture(tfile.name)
 
-        output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+        cap = cv2.VideoCapture(tfile.name)
+        output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         fps = int(cap.get(cv2.CAP_PROP_FPS) or 24)
         w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         out = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
 
+        frame_count = 0
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-            try:
-                processed_frame, _ = detect_mask_frame(frame)
-                out.write(processed_frame)
-            except Exception:
-                # Skip problematic frames
-                continue
+            frame_count += 1
+            if frame_count % 3 != 0:
+                continue  # Skip some frames for speed
+            processed_frame, _ = detect_mask_frame(frame)
+            out.write(processed_frame)
 
         cap.release()
         out.release()
-
         st.success("✅ Video processing complete!")
         st.video(output_path)
         os.remove(tfile.name)
