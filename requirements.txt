@@ -1,6 +1,5 @@
 streamlit==1.44.1
 tensorflow==2.20.0
-keras==3.6.0
 mtcnn==1.0.0
 opencv-python-headless==4.10.0.84
 numpy==2.1.3
