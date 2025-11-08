@@ -39,8 +39,9 @@ def detect_mask_frame(frame, confidence_threshold=0.6, min_face_size=50, pad=10)
         if w < min_face_size or h < min_face_size:
             continue
 
-        x1, y1 = max(0, x - pad), max(0, y - pad)
-        x2, y2 = min(frame.shape[1], x + w + pad), min(frame.shape[0], y + h + pad)
+      
+        x1, y1 = max(0, x-pad), max(0, y-pad)
+        x2, y2 = min(frame.shape[1], x+w+pad), min(frame.shape[0], y+h+pad)
 
         face_img = frame[y1:y2, x1:x2]
         if face_img.size == 0:
@@ -57,36 +58,42 @@ def detect_mask_frame(frame, confidence_threshold=0.6, min_face_size=50, pad=10)
         color = (0, 255, 0) if label == "Mask" else (255, 0, 0)
 
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+        cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
         results.append(label)
     return frame, results
 
-# ----------------------------
-# Input selection
-# ----------------------------
-option = st.radio("Choose input type:", ["Use Camera", "Upload Image"])
+option = st.radio("Choose input type:", ["Webcam", "Upload Image"])
 
-if option == "Use Camera":
-    st.write("Capture image using your webcam below 👇")
-    image_data = st.camera_input("Take a picture")
+if option == "Webcam":
+    st.write("Starting webcam...")
+    cap = cv2.VideoCapture(0)
+    stframe = st.empty()
+    mask_count_total = 0
+    no_mask_count_total = 0
+    frame_count = 0
 
-    if image_data:
-        image = Image.open(image_data)
-        frame, results = detect_mask_frame(np.array(image.convert("RGB")))
-        st.image(frame, channels="RGB", use_container_width=True)
-        if results:
-            st.success(f"Detected: {results}")
-        else:
-            st.warning("No face detected.")
+    stop_webcam = st.button("Stop Webcam")
+
+    while cap.isOpened() and not stop_webcam:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_count += 1
+        frame = cv2.resize(frame, (640, 480))
+        frame, results = detect_mask_frame(frame)
+        mask_count_total += results.count("Mask")
+        no_mask_count_total += results.count("No Mask")
+
+        stframe.image(frame, channels="RGB", use_container_width=True)
+
+    cap.release()
 
 elif option == "Upload Image":
-    uploaded_file = st.file_uploader("Upload an image...", type=["jpg", "jpeg", "png"])
+    uploaded_file = st.file_uploader("Upload an image...", type=["jpg","jpeg","png"])
     if uploaded_file:
         image = Image.open(uploaded_file)
         st.image(image, caption="Uploaded Image", use_container_width=True)
         frame, results = detect_mask_frame(np.array(image.convert("RGB")))
         st.image(frame, channels="RGB", use_container_width=True)
-        if results:
-            st.success(f"Detected: {results}")
-        else:
-            st.warning("No face detected.")
+        st.write(f"Detected: {results}")
