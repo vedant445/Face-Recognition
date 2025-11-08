@@ -159,7 +159,6 @@ elif option == "Upload Video":
 
         progress_bar.empty()
         status_text.text("✅ Video processing complete!")
-        time.sleep(2)
 
         if os.path.exists(out_path_avi) and os.path.getsize(out_path_avi) > 10000:
             st.video(out_path_avi)
@@ -169,3 +168,4 @@ elif option == "Upload Video":
 
         # Clean up
         os.remove(tfile.name)
+
